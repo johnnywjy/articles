@@ -1,4 +1,4 @@
-本文主要探讨一些常用后台任务的最佳实践。我们将会看看如何并发地使用 Core Data ，如何并行绘制 UI ，如何做异步网络请求等。最后我们将研究如何异步处理大型文件，以保持较低的内存占用。  因为在异步编程中非常容易犯错误，所以，本文中的例子都将使用很简单的方式。因为使用简单的结构可以帮助我们看透代码，抓住问题本质。如果你最后把代码写成了复杂的嵌套回调的话，那么你很可能应该重新考虑自己当初的设计选择了。
+本文主要探讨一些常用后台任务的最佳实践。我们将会看看如何并发地使用 Core Data ，如何并行绘制 UI ，如何做异步网络请求等。最后我们将研究如何异步处理大型文件，以保持较低的内存占用。因为在异步编程中非常容易犯错误，所以，本文中的例子都将使用很简单的方式。因为使用简单的结构可以帮助我们看透代码，抓住问题本质。如果你最后把代码写成了复杂的嵌套回调的话，那么你很可能应该重新考虑自己当初的设计选择了。
 
 
 ## 操作队列 (Operation Queues) 还是 GCD ?
@@ -12,13 +12,15 @@
 * [StackOverflow: NSOperation vs. Grand Central Dispatch](http://stackoverflow.com/questions/10373331/nsoperation-vs-grand-central-dispatch)
 * [Blog: When to use NSOperation vs. GCD](http://eschatologist.net/blog/?p=232)
 
+**March 2015 更新**: 这篇文章是基于已经过时了的 Concurrency with Core Data 来编写的。
+
 ### 后台的 Core Data
 
-在着手 Core Data 的并行处理之前，最好先打一些基础。我们强烈建议通读苹果的官方文档 [Concurrency with Core Data guide][10] 。这个文档中罗列了基本规则，比如绝对不要在线程间传递 managed objects等。这并不单是说你绝不应该在另一个线程中去更改某个其他线程的 managed object ，甚至是读取其中的属性都是不能做的。要想传递这样的对象，正确做法是通过传递它的 object ID ，然后从其他对应线程所绑定的 context 中去获取这个对象。
+在着手 Core Data 的并行处理之前，最好先打一些基础。我们强烈建议通读苹果的官方文档 [Concurrency with Core Data][10] 。这个文档中罗列了基本规则，比如绝对不要在线程间传递 managed objects等。这并不单是说你绝不应该在另一个线程中去更改某个其他线程的 managed object ，甚至是读取其中的属性都是不能做的。要想传递这样的对象，正确做法是通过传递它的 object ID ，然后从其他对应线程所绑定的 context 中去获取这个对象。
 
 其实只要你遵循那些规则，并使用这篇文章里所描述的方法的话，处理 Core Data 的并行编程还是比较容易的。
 
-Xcode 所提供的 Core Data 标准模版中，所设立的是运行在主线程中的一个存储调度 (persistent store coordinator)和一个托管对象上下文 (managed object context) 的方式。在很多情况下，这种模式可以运行良好。创建新的对象和修改已存在的对象开销都非常小，也都能在主线程中没有困难滴完成。然后，如果你想要做大量的处理，那么把它放到一个后台上下文来做会比较好。一个典型的应用场景是将大量数据导入到 Core Data 中。
+Xcode 所提供的 Core Data 标准模版中，所设立的是运行在主线程中的一个存储调度 (persistent store coordinator)和一个托管对象上下文 (managed object context) 的方式。在很多情况下，这种模式可以运行良好。创建新的对象和修改已存在的对象开销都非常小，也都能在主线程中没有困难地完成。然后，如果你想要做大量的处理，那么把它放到一个后台上下文来做会比较好。一个典型的应用场景是将大量数据导入到 Core Data 中。
 
 我们的方式非常简单，并且可以被很好地描述：
 
@@ -82,7 +84,7 @@ Xcode 所提供的 Core Data 标准模版中，所设立的是运行在主线程
 
 然而，如果你执行示例代码的话，你会发现它运行逐渐变得很慢，取消操作也有迟滞。这是因为主操作队列中塞满了要更新进度条的 block 操作。一个简单的解决方法是降低更新的频度，比如只在每导入一百行时更新一次：
 
-    NSInteger progressGranularity = lines.count / 100;
+    NSInteger progressGranularity = 100;
 
     if (idx % progressGranularity == 0) {
         self.progressCallback(idx / (float) count);
@@ -93,7 +95,7 @@ Xcode 所提供的 Core Data 标准模版中，所设立的是运行在主线程
 
 在 app 中的 table view 是由一个在主线程上获取了结果的 controller 所驱动的。在导入数据的过程中和导入数据完成后，我们要在 table view 中展示我们的结果。
 
-在让一切运转起来之前之前，还有一件事情要做。现在在后台 context 中导入的数据还不能传送到主 context中，除非我们显式地让它这么去做。我们在 `Store` 类的设置 Core Data stack 的 `init` 方法中加入下面的代码：
+在让一切运转起来之前之前，还有一件事情要做。现在在后台 context 中导入的数据还不能传送到主 context 中，除非我们显式地让它这么去做。我们在 `Store` 类的设置 Core Data stack 的 `init` 方法中加入下面的代码：
 
     [[NSNotificationCenter defaultCenter]
         addObserverForName:NSManagedObjectContextDidSaveNotification
@@ -120,7 +122,7 @@ Xcode 所提供的 Core Data 标准模版中，所设立的是运行在主线程
 
 在导入操作时，我们将整个文件都读入到一个字符串中，然后将其分割成行。这种处理方式对于相对小的文件来说没有问题，但是对于大文件，最好采用惰性读取 (lazily read) 的方式逐行读入。本文最后的示例将使用输入流的方式来实现这个特性，在 [StackOverflow][14] 上 Dave DeLong 也提供了一段非常好的示例代码来说明这个问题。
 
-在 app 第一次运行时，除开将大量数据导入 Core Data 这一选择以外，你也可以在你的 app bundle 中直接放一个 sqlite 文件，或者从一个可以动态生成数据的服务器下载。如果使用这些方式的话，可以节省不少在设备上的处理事件。
+在 app 第一次运行时，除开将大量数据导入 Core Data 这一选择以外，你也可以在你的 app bundle 中直接放一个 sqlite 文件，或者从一个可以动态生成数据的服务器下载。如果使用这些方式的话，可以节省不少在设备上的处理时间。
 
 最后，最近对于 child contexts 有很多争议。我们的建议是不要在后台操作中使用它。如果你以主 context 的 child 的方式创建了一个后台 context 的话，保存这个后台 context 将[阻塞主线程][15]。而要是将主 context 作为后台 context 的 child 的话，实际上和与创建两个传统的独立 contexts 来说是没有区别的。因为你仍然需要手动将后台的改变合并回主 context 中去。
 
